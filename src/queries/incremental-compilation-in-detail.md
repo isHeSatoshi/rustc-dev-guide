@@ -538,6 +538,33 @@ sense to mark it as `eval_always`, thus getting rid of its dependency tracking c
 And it always makes sense to mark the monolithic query as `no_hash`
 because we have the projections to take care of keeping things green as much as possible.
 
+## Query side effects: diagnostics and feature usage
+
+Red-green evaluation assumes that reusing a query's result means reusing everything the query did.
+That is not true for diagnostics: a query can emit warnings while it runs, and if a later session
+loads its result from disk instead of running it again, those warnings would disappear.
+
+The compiler handles this with _side effects_.
+A [`QuerySideEffect`] is something a query did that cannot be represented in its return value, and
+there are two kinds: a diagnostic that was emitted, and a feature that was used.
+
+Emitting a diagnostic from inside a query goes through `track_diagnostic`, which is a callback
+`rustc_errors` invokes so that it can reach the implicit query state.
+When a query is running, the callback calls `DepGraph::record_diagnostic`, which encodes the
+diagnostic as a `QuerySideEffect::Diagnostic` and registers it as a dependency of the query that
+emitted it, under a `SideEffect` dep node.
+
+Those side effect nodes are persisted along with the rest of the dep graph, so in a later session a
+query that is marked green brings its diagnostics back with it.
+When `try_mark_green` walks the query's dependencies and reaches a side effect node, it forces that
+node, which loads the serialized effect from the on-disk cache and replays it: a stored diagnostic
+is emitted again, and a stored feature is inserted into the query system's used-features set.
+
+This is why the query system can mark a query green and still report its warnings, and why the
+result cache stores more than query results.
+
+[`QuerySideEffect`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/dep_graph/enum.QuerySideEffect.html
+
 
 # Shortcomings of the current system
 
